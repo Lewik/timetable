@@ -172,19 +172,20 @@ class TimeTableConstraintProvider : ConstraintProvider {
 
             fromUniquePair(Lesson::class.java,
                 Joiners.equal(Lesson::timeslot),
-                Joiners.equal(Lesson::studentGroup))
+                Joiners.equal(Lesson::studentGroup)
+            )
                 .penalize("Student group conflict", HardSoftScore.ONE_HARD),
 
             from(Lesson::class.java)
                 .filter { it.timeslot != null }
                 .groupBy({ it.studentGroup }, { it.timeslot!!.day }, ConstraintCollectors.toList())
                 .filter { group, day, list ->
-                    list.any { it.timeslot!!.number == 1 }
+                    list.any { it.timeslot!!.number != 1 }
                 }
                 .penalize(
                     "Student must have first lesson",
                     HardSoftScore.ONE_HARD
-                ) { group, day, list -> list.count { it.timeslot!!.number == 1 } },
+                ) { group, day, list -> list.count { it.timeslot!!.number != 1 } },
 
             //SOFT
 //            from(Lesson::class.java)
