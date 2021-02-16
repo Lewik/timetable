@@ -1,261 +1,35 @@
 package timetable
 
-import kotlinx.serialization.Serializable
-import org.optaplanner.core.api.domain.entity.PlanningEntity
-import org.optaplanner.core.api.domain.lookup.PlanningId
-import org.optaplanner.core.api.domain.solution.PlanningEntityCollectionProperty
-import org.optaplanner.core.api.domain.solution.PlanningScore
-import org.optaplanner.core.api.domain.solution.PlanningSolution
-import org.optaplanner.core.api.domain.solution.ProblemFactCollectionProperty
-import org.optaplanner.core.api.domain.valuerange.ValueRangeProvider
-import org.optaplanner.core.api.domain.variable.PlanningVariable
-import org.optaplanner.core.api.score.buildin.hardsoft.HardSoftScore
-import org.optaplanner.core.api.score.calculator.EasyScoreCalculator
-import org.optaplanner.core.api.score.stream.ConstraintCollectors
-import org.optaplanner.core.api.score.stream.ConstraintFactory
-import org.optaplanner.core.api.score.stream.ConstraintProvider
-import org.optaplanner.core.api.score.stream.Joiners
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.optaplanner.core.api.solver.SolverManager
-import org.optaplanner.core.api.solver.SolverStatus
 import org.optaplanner.core.config.solver.SolverConfig
-import java.time.DayOfWeek
 import java.time.Duration
-import java.time.format.TextStyle
-import java.util.*
 
-
-@Target(AnnotationTarget.CLASS)
-annotation class NoArg
-
-@Serializable
-@NoArg
-@PlanningEntity
-data class Lesson(
-    val subject: String,
-    val teacher: String,
-    val studentGroup: String,
-    @PlanningVariable(valueRangeProviderRefs = ["timeslotRange"])
-    var timeslot: TimeSlot? = null,
-    @PlanningId
-    val id: String = UUID.randomUUID().toString(),
-)
-
-@Serializable
-data class TimeSlot(
-    val day: String,
-    val number: Int,
-)
-
-
-@NoArg
-@PlanningSolution
-data class TimeTable(
-
-    @ProblemFactCollectionProperty
-    @ValueRangeProvider(id = "timeslotRange")
-    var timeslotList: List<TimeSlot>,
-
-    @PlanningEntityCollectionProperty
-    var lessonList: List<Lesson>,
-
-    @PlanningScore
-    var score: HardSoftScore? = null,
-
-    // Ignored by OptaPlanner, used by the UI to display solve or stop solving button
-    var solverStatus: SolverStatus? = null,
-)
-
-@Serializable
-data class UiTimeTable(
-    val lessonList: List<Lesson>,
-) {
-    companion object {
-        fun createFrom(timeTable: TimeTable) = UiTimeTable(
-            lessonList = timeTable.lessonList
-        )
-    }
-}
-
-val workingDays = DayOfWeek
-    .values()
-    .dropLast(2)
-    .map { it.getDisplayName(TextStyle.SHORT, Locale.getDefault()) }
-
-class TimeTableEasyScoreCalculator : EasyScoreCalculator<TimeTable, HardSoftScore> {
-    override fun calculateScore(timeTable: TimeTable): HardSoftScore {
-        val lessonList = timeTable.lessonList
-        var hardScore = 0
-
-        val nulls = lessonList.count { it.timeslot == null }
-        repeat(nulls) { hardScore-- }
-
-        if (nulls == 0) {
-            lessonList.forEach { a ->
-                lessonList.forEach { b ->
-                    if (a.id != b.id) {
-                        if (a.timeslot != null && a.timeslot == b.timeslot) {
-                            if (a.teacher == b.teacher) {
-//                                hardScore--
-                            }
-                            if (a.studentGroup == b.studentGroup) {
-                                hardScore--
-                            }
-                        }
-                    }
-                }
-            }
-
-            val lessonsGroups = lessonList
-                .groupBy { it.studentGroup }
-
-            lessonsGroups
-                .forEach { (group, groupLessons) ->
-                    val groupLessonsByDay = groupLessons
-                        .groupBy { it.timeslot!!.day }
-
-                    if (workingDays.minus(groupLessonsByDay.keys).isNotEmpty()) {
-                        hardScore--
-                    }
-
-                    groupLessonsByDay
-                        .forEach { (day, dayGroupLesions) ->
-                            if (dayGroupLesions.isEmpty()) {
-                                hardScore--
-                            }
-                            val numbers = dayGroupLesions.map { it.timeslot!!.number }
-                            if (1 !in numbers) {
-                                hardScore--
-                            }
-                            val lastNumber = numbers.maxOrNull()!!
-                            if ((1..lastNumber)
-                                    .toSet()
-                                    .minus(numbers).isNotEmpty()
-                            ) {
-                                hardScore--
-                            }
-                        }
-                }
-        }
-
-        val softScore = 0
-        // Soft constraints are only implemented in the "complete" implementation
-        return HardSoftScore.of(hardScore, softScore)
-    }
-}
-
-class TimeTableConstraintProvider : ConstraintProvider {
-
-    override fun defineConstraints(constraintFactory: ConstraintFactory) = with(constraintFactory) {
-        arrayOf(
-            //HARD
-//            from(Lesson::class.java)
-//                .groupBy ({it}, { lesson: Lesson -> lesson.studentGroup })
-//                .join(Lesson::class.java,
-//                    Joiners.equal(Lesson::studentGroup),
-//                    Joiners.equal { lesson: Lesson -> lesson.timeslot?.day },
-//                    Joiners.equal { lesson: Lesson -> lesson.timeslot?.day }
-//                )
-//            fromUniquePair(Lesson::class.java,
-//                Joiners.equal(Lesson::studentGroup),
-//                Joiners.equal { lesson: Lesson -> lesson.timeslot?.day }
-//            )
-//                .filter { lesson1: Lesson, lesson2: Lesson ->
-//                    abs((lesson1.timeslot!!.number) - (lesson2.timeslot!!.number)) != 1
-//                }
-//                .penalize("Student no gaps", HardSoftScore.ONE_HARD),
-
-//            fromUniquePair(Lesson::class.java,
-//                Joiners.equal(Lesson::timeslot),
-//                Joiners.equal(Lesson::teacher)
-//            )
-//                .penalize("Teacher conflict", HardSoftScore.ONE_HARD),
-
-            fromUniquePair(Lesson::class.java,
-                Joiners.equal(Lesson::timeslot),
-                Joiners.equal(Lesson::studentGroup)
-            )
-                .penalize("Student group conflict", HardSoftScore.ONE_HARD),
-
-            from(Lesson::class.java)
-                .filter { it.timeslot != null }
-                .groupBy({ it.studentGroup }, { it.timeslot!!.day }, ConstraintCollectors.toList())
-                .filter { group, day, list ->
-                    list.any { it.timeslot!!.number != 1 }
-                }
-                .penalize(
-                    "Student must have first lesson",
-                    HardSoftScore.ONE_HARD
-                ) { group, day, list -> list.count { it.timeslot!!.number != 1 } },
-
-            //SOFT
-//            from(Lesson::class.java)
-//                .join(Lesson::class.java,
-//                    Joiners.equal(Lesson::teacher),
-//                    Joiners.equal { lesson: Lesson -> lesson.timeslot?.day }
-//                )
-//                .filter { lesson1: Lesson, lesson2: Lesson ->
-//                    abs((lesson1.timeslot!!.number) - (lesson2.timeslot!!.number)) == 1
-//                }
-//                .reward("Teacher time efficiency", HardSoftScore.ONE_SOFT)
-        )
-    }
-
-//    fun studentGroupSubjectVariety(constraintFactory: ConstraintFactory): Constraint {
-//        // A student group dislikes sequential lessons on the same subject.
-//        return constraintFactory
-//            .from(Lesson::class.java)
-//            .join(Lesson::class.java,
-//                Joiners.equal(Lesson::subject),
-//                Joiners.equal(Lesson::studentGroup),
-//                Joiners.equal { lesson: Lesson -> lesson.timeslot?.day })
-//            .filter { lesson1: Lesson, lesson2: Lesson ->
-//                abs((lesson1.timeslot?.number ?: 0) - (lesson2.timeslot?.number ?: 0)) <= 1
-//            }
-//            .penalize("Student group subject variety", HardSoftScore.ONE_SOFT)
-//    }
-
-}
 
 const val SINGLETON_TIME_TABLE_ID = 1L
 
-
-fun main(args: Array<String>) {
-    val timeSlots = workingDays
-        .flatMap { day ->
-            (1..8).map { number ->
-                TimeSlot(day, number)
-            }
+val timeSlots = workingDays
+    .flatMap { day ->
+        (1..8).map { number ->
+            TimeSlot(day, number)
         }
-
-    val getPerClassLessons = { group: String, baseTeacher: String ->
-        listOf(
-            List(4) { Lesson("Math", baseTeacher, group) },
-            List(4) { Lesson("Rus", baseTeacher, group) },
-            List(1) { Lesson("HLang", baseTeacher, group) },
-            List(2) { Lesson("Eng", "${group.first()}ET", group) },
-            List(3) { Lesson("Phis", "${group.first()}PT", group) },
-            List(2) { Lesson("Env", baseTeacher, group) },
-            List(1) { Lesson("Tech", baseTeacher, group) },
-            List(1) { Lesson("Iso", baseTeacher, group) },
-            List(1) { Lesson("Mus", "MT", group) },
-        )
-            .flatten()
     }
 
-    val groups = listOf("a", "b", "c", "d")
-        .flatMap { letter ->
-            (1..4).map { number ->
-                "$number$letter"
-            }
-        }
-        .dropLast(1)
+fun main(args: Array<String>) {
+    main1()
+//    main2()
+}
+
+fun main1() {
+
+
     println("Groups: ${groups.size}")
 
 
     val lessons = groups
-        .flatMap { group ->
-            getPerClassLessons(group, "${group}T")
-        }
+        .values
+        .flatten()
 
     val problem = TimeTable(
         timeslotList = timeSlots,
@@ -269,83 +43,86 @@ fun main(args: Array<String>) {
         )
 //        withEasyScoreCalculatorClass(TimeTableEasyScoreCalculator::class.java)
         withConstraintProviderClass(TimeTableConstraintProvider::class.java)
-        withTerminationSpentLimit(Duration.ofSeconds(5))
+        withTerminationSpentLimit(Duration.ofSeconds(120))
     }
 
     val manager = SolverManager.create<TimeTable, Long>(solverConfig)
     println("Start")
-//    val job = manager.solveAndListen(
-//        SINGLETON_TIME_TABLE_ID,
-//        { solution },
-//        {
-//            println(it)
-//        },
-//        {
-//            println("BEST $it")
-//        },
-//        { a, b ->
-//            System.err.println(a)
-//            System.err.println(b)
-//        }
-//    )
-    val job = manager.solve(SINGLETON_TIME_TABLE_ID, problem)
+    val job = manager.solveAndListen(
+        SINGLETON_TIME_TABLE_ID,
+        { problem },
+        {
+            println("VARIANT")
+            printSolution(it)
+        },
+        {
+            println("BEST")
+            printSolution(it)
+        },
+        { a, b ->
+            System.err.println(a)
+            System.err.println(b)
+        }
+    )
+//    val job = manager.solve(SINGLETON_TIME_TABLE_ID, problem)
 
     val solution = job.finalBestSolution
     println("End")
 
-    val uiTimeTable = UiTimeTable.createFrom(solution)
+//    val uiTimeTable = UiTimeTable.createFrom(solution)
 
 //    println(Json { prettyPrint = true }.encodeToString(uiTimeTable))
 
 
-    val rowWidth = 6
-    println(solution.score)
-    print("Table".padEnd(rowWidth))
-    print("|")
-
-
-    val lessonList = solution
-        .lessonList
-
-    workingDays
-        .forEach { dayOfWeek ->
-            (1..8).forEach a@{ slot ->
-                if (lessonList.none { it.timeslot!!.number == slot }) return@a
-                print("$dayOfWeek($slot)".padEnd(rowWidth))
-                print("|")
-            }
-            print("      ")
-        }
-
-    println()
-
-
-
-
-    groups
-        .sorted()
-        .forEach { studentGroup ->
-            print(studentGroup.padEnd(rowWidth))
-            print("|")
-            workingDays
-                .forEach { dayOfWeek ->
-                    (1..8).forEach a@{ slot ->
-                        if (lessonList.none { it.timeslot!!.number == slot }) return@a
-
-                        lessonList
-                            .filter { it.studentGroup == studentGroup && it.timeslot?.day == dayOfWeek && it.timeslot?.number == slot }
-//                            .joinToString { "${it.subject}/${it.teacher}" }
-                            .joinToString { "${it.subject}" }
-                            .padEnd(rowWidth)
-                            .also { print(it) }
-                        print("|")
-                    }
-                    print("      ")
-                }
-
-            println()
-        }
-
-
+//    printSolution(solution)
 }
 
+
+fun main2() {
+    val text = """
+        ;Понедельник ;;;;;Вторник ;;;;;Среда ;;;;;Четверг ;;;;;Пятница ;;;;
+        ;1;2;3;4;5;1;2;3;4;5;1;2;3;4;5;1;2;3;4;5;1;2;3;4;5
+        1а;Математика;Физкультура;Обучение грамоте;Окр ;;Обучение грамоте;Муз;Математика;Письмо;;Обучение грамоте;Письмо;Окр ;Технология;Физкультура;Математика;Обучение грамоте;Письмо;Изо ;;Письмо;Математика ;Физкультура;Обучение грамоте;
+        1б;Обучение грамоте;Письмо;Физкультура;Математика;;Математика;Обучение грамоте;Муз;Письмо;;Математика;Физкультура;Окр ;Обучение грамоте;;Обучение грамоте;Письмо;Технология ;Изо ;Физкультура;Письмо;Обучение грамоте;Математика;Окр ;
+        1в;Обучение грамоте;Письмо;Математика;Технология;Физкультура;Окр ;Физкультура;Обучение грамоте;Письмо;;Математика;Обучение грамоте;Письмо;Изо ;;Обучение грамоте;Письмо;Муз ;Математика;;Математика;Физкультура;Обучение грамоте;Окр ;
+        1г;Окр ;Математика;Муз;Письмо;;Математика;Физкультура;Обучение грамоте;Письмо;;Обучение грамоте;Письмо;Математика;Изо ;;Обучение грамоте;Физкультура;Письмо;Технология ;;Обучение грамоте;Письмо;Математика;Окр ;Физкультура
+        2а;Чтение;Физкультура;Русский язык;Математика;;Математика;Англ.яз ;Русский язык;Окр ;Изо ;Чтение;Русский язык;Физкультура;Математика;Технология;Русский язык;Англ.яз ;Чтение;Окр ;;Чтение;Русский язык;Физкультура;Математика;Муз
+        2б;Математика;Русский язык;Физкультура;Окр ;Чтение;Математика;Русский язык;Англ.яз ;Изо ;Технология;Математика;Физкультура;Русский язык;Чтение;;Математика;Чтение;Русский язык;Муз;Физкультура;Русский язык;Чтение;Англ.яз ;Окр ;
+        2в;Математика;Русский язык;Чтение;Физкультура;;Муз ;Русский язык;Чтение;Окр ;Изо ;Математика;Англ.яз ;Русский язык;Чтение;Технология;Математика;Физкультура;Русский язык;Окр ;;Математика;Русский язык;Чтение;Англ.яз ;Физкультура
+        3а;Математика;Русский язык;Англ.яз ;Муз;;Русский язык;Математика;Чтение;Окр ;Физкультура;Математика;Русский язык;Изо ;Чтение;Физкультура;Математика ;Русский язык;Чтение;Технология ;Англ.яз ;Русский язык;Физкультура;Окр ;Чтение;
+        3б;Англ.яз ;Муз;Математика;Русский язык;Чтение;Математика;Русский язык;Физкультура;Чтение;;Русский язык;Математика;Чтение;Англ.яз ;Окр ;Математика ;Физкультура;Русский язык;Окр ;Изо ;Русский язык;Чтение;Технология;Физкультура;
+        3в;Чтение;Русский язык;Англ.яз ;Математика;Физкультура;Чтение;Окр ;Русский язык;Математика;Англ.яз ;Математика;Русский язык;Физкультура;Технология;Изо ;Окр ;Муз ;Русский язык;Чтение;;Математика;Русский язык;Чтение;Физкультура;
+        3г;Математика;Англ.яз ;Русский язык;Физкультура;Чтение;Англ.яз ;Русский язык;Математика;Окр ;Муз ;Математика;Русский язык;Чтение ;Физкультура;Изо ;Русский язык;Математика ;Физкультура;Чтение;;Русский язык;Чтение;Окр ;Технология;
+        3д;Чтение;Русский язык;Математика;Окр ;Физкультура;Математика;Англ.яз ;Русский язык;Муз ;;Математика;Русский язык;Физкультура;Чтение ;;Физкультура;Математика ;Русский язык;Чтение;Англ.яз ;Окр ;Русский язык;Чтение;Изо ;Технология
+        4а;Математика;Русский язык;орксэ;Англ.яз ;Изо ;Окр ;Русский язык;Математика;Физкультура;;Чтение;Русский язык;Англ.яз ;Математика;Технология;Окр ;Русский язык;Математика;Физкультура;Чтение;Физкультура;Русский язык;Чтение;Муз ;
+        4б;Муз ;Русский язык;Физкультура;Математика;Чтение ;Математика;Русский язык;Физкультура;Окр ;;Русский язык;Математика;Англ.яз ;Чтение ;Изо ;Русский язык;Окр ;Англ.яз ;Технология;орксэ;Русский язык;Математика;Физкультура;Чтение ;
+        4в;Физкультура;Окр ;орксэ;Русский язык;Математика;Чтение;Русский язык;Математика;Англ.яз ;Изо ;Чтение ;Русский язык;Математика;Физкультура;;Русский язык;Математика ;Чтение;Англ.яз ;Технология;Муз ;Физкультура;Русский язык;Окр ;
+    """.trimIndent()
+
+    val result = text
+        .lines()
+        .drop(2)
+        .associate { row ->
+            val cells = row.split(";")
+            val group = cells[0]
+            val lessons = cells
+                .drop(1)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .chunked(5)
+
+            group to lessons
+        }
+
+    val json = Json { prettyPrint = true }.encodeToString(result)
+//    println(json)
+
+    val flatten = result.values.flatten().flatten().sorted()
+    println("lessons: ${flatten.distinct()}")
+
+    println("lessons per class")
+    result.forEach { (group, list) ->
+        println("$group: ${list.flatten().groupingBy { it }.eachCount().toSortedMap()}")
+    }
+
+}
